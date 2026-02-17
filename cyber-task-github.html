@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>CyberSec Task Manager</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0a0e1a;color:#e2e8f0;font-family:'Courier New',monospace;min-height:100vh}
+  input,select,textarea,button{font-family:'Courier New',monospace}
+  ::-webkit-scrollbar{width:6px;height:6px}
+  ::-webkit-scrollbar-track{background:#0d1117}
+  ::-webkit-scrollbar-thumb{background:#1e3a2f;border-radius:3px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const COLUMNS = ["Backlog","In Progress","Review/QA","Completed"];
+const PRIORITIES = ["Critical","High","Medium","Low"];
+const CATEGORIES = ["Pen Testing","Client Work","Compliance","Internal","Incident Response","Vulnerability Assessment","Other"];
+const PRIORITY_COLORS = {Critical:"#ef4444",High:"#f97316",Medium:"#eab308",Low:"#22c55e"};
+const COL_COLORS = {"Backlog":"#3b82f6","In Progress":"#f97316","Review/QA":"#a855f7","Completed":"#22c55e"};
+
+function genId(){return Date.now().toString(36)+Math.random().toString(36).slice(2)}
+function formatDate(d){if(!d)return "";return new Date(d).toLocaleDateString()}
+function isOverdue(due,stage){if(!due||stage==="Completed")return false;return new Date(due)<new Date()}
+function getDaysLeft(due){if(!due)return null;return Math.ceil((new Date(due)-new Date())/(1000*60*60*24))}
+
+const defaultTask={title:"",priority:"Medium",category:"Internal",due:"",notes:"",stage:"Backlog"};
+
+const inputStyle={background:"#161b2e",border:"1px solid #1e3a2f",color:"#e2e8f0",padding:"8px 12px",borderRadius:6,fontSize:13,outline:"none",width:"100%",boxSizing:"border-box",fontFamily:"'Courier New',monospace"};
+function btnStyle(bg,color){return{background:bg,color,border:`1px solid ${color}33`,padding:"4px 10px",borderRadius:5,cursor:"pointer",fontSize:11,fontFamily:"'Courier New',monospace"}}
+
+function Modal({children,onClose}){
+  return(
+    <div style={{position:"fixed",inset:0,background:"#000000aa",display:"flex",alignItems:"center",justifyContent:"center",zIndex:200,padding:16}}>
+      <div style={{background:"#0d1117",border:"1px solid #1e3a2f",borderRadius:12,padding:24,width:"100%",maxWidth:460,maxHeight:"90vh",overflowY:"auto"}}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function Field({label,children}){
+  return(
+    <div style={{marginBottom:12}}>
+      <div style={{fontSize:11,color:"#64748b",marginBottom:5,letterSpacing:1}}>{label.toUpperCase()}</div>
+      {children}
+    </div>
+  );
+}
+
+function App(){
+  const [tasks,setTasks]=useState(()=>{try{const s=localStorage.getItem("cybertasks");return s?JSON.parse(s):[]}catch{return []}});
+  const [showForm,setShowForm]=useState(false);
+  const [formData,setFormData]=useState(defaultTask);
+  const [editId,setEditId]=useState(null);
+  const [activeNote,setActiveNote]=useState(null);
+  const [noteText,setNoteText]=useState("");
+  const [exportMenu,setExportMenu]=useState(false);
+  const [search,setSearch]=useState("");
+  const [dragging,setDragging]=useState(null);
+  const [dragOver,setDragOver]=useState(null);
+  const exportRef=useRef();
+
+  useEffect(()=>{try{localStorage.setItem("cybertasks",JSON.stringify(tasks))}catch{}},[tasks]);
+
+  useEffect(()=>{
+    const h=(e)=>{if(exportRef.current&&!exportRef.current.contains(e.target))setExportMenu(false)};
+    document.addEventListener("mousedown",h);
+    return()=>document.removeEventListener("mousedown",h);
+  },[]);
+
+  function saveTask(){
+    if(!formData.title.trim())return;
+    if(editId){
+      setTasks(t=>t.map(x=>x.id===editId?{...x,...formData}:x));
+      setEditId(null);
+    }else{
+      setTasks(t=>[...t,{...formData,id:genId(),createdAt:new Date().toISOString(),completedAt:null}]);
+    }
+    setFormData(defaultTask);setShowForm(false);
+  }
+
+  function deleteTask(id){setTasks(t=>t.filter(x=>x.id!==id))}
+
+  function moveTask(id,dir){
+    setTasks(t=>t.map(x=>{
+      if(x.id!==id)return x;
+      const idx=COLUMNS.indexOf(x.stage);
+      const next=COLUMNS[idx+dir];
+      if(!next)return x;
+      return{...x,stage:next,completedAt:next==="Completed"?new Date().toISOString():null};
+    }));
+  }
+
+  function openEdit(task){
+    setFormData({title:task.title,priority:task.priority,category:task.category,due:task.due,notes:task.notes,stage:task.stage});
+    setEditId(task.id);setShowForm(true);
+  }
+
+  function openNote(task){setActiveNote(task.id);setNoteText(task.notes||"")}
+  function saveNote(){setTasks(t=>t.map(x=>x.id===activeNote?{...x,notes:noteText}:x));setActiveNote(null)}
+
+  function exportToExcel(filter){
+    let data=filter==="completed"?tasks.filter(x=>x.stage==="Completed"):tasks;
+    const rows=data.map(x=({"Task Name":x.title,Category:x.category,Priority:x.priority,Stage:x.stage,"Due Date":formatDate(x.due),Notes:x.notes||"",Created:formatDate(x.createdAt),Completed:formatDate(x.completedAt)}));
+    const ws=XLSX.utils.json_to_sheet(rows);
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,"Tasks");
+    XLSX.writeFile(wb,`cybersec-tasks-${Date.now()}.xlsx`);
+    setExportMenu(false);
+  }
+
+  const filtered=tasks.filter(x=>x.title.toLowerCase().includes(search.toLowerCase())||x.category.toLowerCase().includes(search.toLowerCase()));
+  const completed=tasks.filter(x=>x.stage==="Completed").length;
+  const pct=tasks.length?Math.round((completed/tasks.length)*100):0;
+
+  function onDragStart(e,id){setDragging(id);e.dataTransfer.effectAllowed="move"}
+  function onDragOver(e,col){e.preventDefault();setDragOver(col)}
+  function onDrop(e,col){
+    e.preventDefault();
+    if(dragging)setTasks(t=>t.map(x=>x.id===dragging?{...x,stage:col,completedAt:col==="Completed"?new Date().toISOString():x.completedAt}:x));
+    setDragging(null);setDragOver(null);
+  }
+
+  return(
+    <div style={{minHeight:"100vh",background:"#0a0e1a",color:"#e2e8f0"}}>
+      {/* Header */}
+      <div style={{background:"#0d1117",borderBottom:"1px solid #1e3a2f",padding:"16px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <span style={{fontSize:24,color:"#00ff88"}}>⬡</span>
+          <div>
+            <div style={{fontSize:18,fontWeight:"bold",color:"#00ff88",letterSpacing:2}}>CYBERSEC TASK MANAGER</div>
+            <div style={{fontSize:11,color:"#4ade80",opacity:0.7}}>SECURE OPERATIONS BOARD</div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search tasks..." style={{background:"#161b2e",border:"1px solid #1e3a2f",color:"#e2e8f0",padding:"6px 12px",borderRadius:6,fontSize:13,outline:"none",width:180}}/>
+          <div ref={exportRef} style={{position:"relative"}}>
+            <button onClick={()=>setExportMenu(v=>!v)} style={{background:"#1a2744",border:"1px solid #3b82f6",color:"#93c5fd",padding:"7px 14px",borderRadius:6,cursor:"pointer",fontSize:13}}>⬇ Export Excel</button>
+            {exportMenu&&(
+              <div style={{position:"absolute",right:0,top:36,background:"#161b2e",border:"1px solid #1e3a2f",borderRadius:8,zIndex:100,minWidth:180}}>
+                <div onClick={()=>exportToExcel("all")} style={{padding:"10px 16px",cursor:"pointer",borderBottom:"1px solid #1e3a2f",color:"#e2e8f0",fontSize:13}}>📋 All Tasks</div>
+                <div onClick={()=>exportToExcel("completed")} style={{padding:"10px 16px",cursor:"pointer",color:"#e2e8f0",fontSize:13}}>✅ Completed Only</div>
+              </div>
+            )}
+          </div>
+          <button onClick={()=>{setFormData(defaultTask);setEditId(null);setShowForm(true)}} style={{background:"#00ff88",color:"#0a0e1a",border:"none",padding:"7px 16px",borderRadius:6,cursor:"pointer",fontWeight:"bold",fontSize:13,fontFamily:"inherit"}}>+ New Task</button>
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div style={{background:"#0d1117",padding:"12px 24px",borderBottom:"1px solid #1e3a2f",display:"flex",gap:24,alignItems:"center",flexWrap:"wrap"}}>
+        {COLUMNS.map(col=>(
+          <div key={col} style={{display:"flex",alignItems:"center",gap:6}}>
+            <span style={{width:8,height:8,borderRadius:"50%",background:COL_COLORS[col],display:"inline-block"}}></span>
+            <span style={{fontSize:12,color:"#94a3b8"}}>{col}: <strong style={{color:"#e2e8f0"}}>{tasks.filter(x=>x.stage===col).length}</strong></span>
+          </div>
+        ))}
+        <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:10}}>
+          <span style={{fontSize:12,color:"#94a3b8"}}>Overall Progress</span>
+          <div style={{width:120,height:8,background:"#1e293b",borderRadius:4,overflow:"hidden"}}>
+            <div style={{width:`${pct}%`,height:"100%",background:"#00ff88",borderRadius:4,transition:"width 0.4s"}}></div>
+          </div>
+          <span style={{fontSize:12,color:"#00ff88",fontWeight:"bold"}}>{pct}%</span>
+        </div>
+      </div>
+
+      {/* Board */}
+      <div style={{display:"flex",gap:16,padding:"20px 16px",overflowX:"auto",minHeight:"calc(100vh - 160px)"}}>
+        {COLUMNS.map(col=>{
+          const colTasks=filtered.filter(x=>x.stage===col);
+          return(
+            <div key={col} onDragOver={e=>onDragOver(e,col)} onDrop={e=>onDrop(e,col)}
+              style={{flex:"0 0 280px",background:dragOver===col?"#1a2744":"#0d1117",border:`1px solid ${dragOver===col?COL_COLORS[col]:"#1e3a2f"}`,borderRadius:12,display:"flex",flexDirection:"column",transition:"border 0.2s"}}>
+              <div style={{padding:"12px 16px",borderBottom:"1px solid #1e3a2f",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{width:10,height:10,borderRadius:"50%",background:COL_COLORS[col],display:"inline-block"}}></span>
+                  <span style={{fontWeight:"bold",fontSize:13,letterSpacing:1,color:COL_COLORS[col]}}>{col.toUpperCase()}</span>
+                </div>
+                <span style={{background:"#1e293b",color:"#94a3b8",fontSize:11,padding:"2px 8px",borderRadius:10}}>{colTasks.length}</span>
+              </div>
+              <div style={{padding:10,display:"flex",flexDirection:"column",gap:10,flex:1,overflowY:"auto"}}>
+                {colTasks.map(task=>{
+                  const overdue=isOverdue(task.due,task.stage);
+                  const daysLeft=getDaysLeft(task.due);
+                  const colIdx=COLUMNS.indexOf(task.stage);
+                  return(
+                    <div key={task.id} draggable onDragStart={e=>onDragStart(e,task.id)}
+                      style={{background:"#161b2e",border:`1px solid ${overdue?"#ef4444":"#1e3a2f"}`,borderRadius:8,padding:12,cursor:"grab"}}>
+                      <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap"}}>
+                        <span style={{background:PRIORITY_COLORS[task.priority]+"22",color:PRIORITY_COLORS[task.priority],border:`1px solid ${PRIORITY_COLORS[task.priority]}44`,fontSize:10,padding:"2px 7px",borderRadius:10,fontWeight:"bold"}}>{task.priority.toUpperCase()}</span>
+                        <span style={{background:"#1e293b",color:"#94a3b8",fontSize:10,padding:"2px 7px",borderRadius:10}}>{task.category}</span>
+                      </div>
+                      <div style={{fontSize:14,fontWeight:"bold",color:"#e2e8f0",marginBottom:6,lineHeight:1.4}}>{task.title}</div>
+                      {task.due&&<div style={{fontSize:11,color:overdue?"#ef4444":daysLeft<=2?"#f97316":"#64748b",marginBottom:8}}>{overdue?"⚠ OVERDUE":`⏱ ${daysLeft}d left`} · {formatDate(task.due)}</div>}
+                      {task.notes&&<div style={{fontSize:11,color:"#64748b",marginBottom:8,borderLeft:"2px solid #1e3a2f",paddingLeft:8,fontStyle:"italic"}}>{task.notes.slice(0,60)}{task.notes.length>60?"…":""}</div>}
+                      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                        {colIdx>0&&<button onClick={()=>moveTask(task.id,-1)} style={btnStyle("#1e293b","#94a3b8")}>◀</button>}
+                        {colIdx<COLUMNS.length-1&&<button onClick={()=>moveTask(task.id,1)} style={btnStyle(COL_COLORS[COLUMNS[colIdx+1]]+"22",COL_COLORS[COLUMNS[colIdx+1]])}>▶ {COLUMNS[colIdx+1].split("/")[0]}</button>}
+                        <button onClick={()=>openNote(task)} style={btnStyle("#1e2a1e","#4ade80")}>📝 Notes</button>
+                        <button onClick={()=>openEdit(task)} style={btnStyle("#1e293b","#93c5fd")}>✏</button>
+                        <button onClick={()=>deleteTask(task.id)} style={btnStyle("#2a1e1e","#f87171")}>🗑</button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {colTasks.length===0&&<div style={{color:"#1e3a2f",fontSize:12,textAlign:"center",marginTop:20}}>— empty —</div>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Task Form Modal */}
+      {showForm&&(
+        <Modal onClose={()=>setShowForm(false)}>
+          <div style={{fontSize:16,fontWeight:"bold",color:"#00ff88",marginBottom:16}}>{editId?"EDIT TASK":"NEW TASK"}</div>
+          <Field label="Task Title"><input value={formData.title} onChange={e=>setFormData(f=>({...f,title:e.target.value}))} style={inputStyle} placeholder="Enter task name..."/></Field>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <Field label="Priority"><select value={formData.priority} onChange={e=>setFormData(f=>({...f,priority:e.target.value}))} style={inputStyle}>{PRIORITIES.map(p=><option key={p}>{p}</option>)}</select></Field>
+            <Field label="Stage"><select value={formData.stage} onChange={e=>setFormData(f=>({...f,stage:e.target.value}))} style={inputStyle}>{COLUMNS.map(c=><option key={c}>{c}</option>)}</select></Field>
+          </div>
+          <Field label="Category"><select value={formData.category} onChange={e=>setFormData(f=>({...f,category:e.target.value}))} style={inputStyle}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></Field>
+          <Field label="Due Date"><input type="date" value={formData.due} onChange={e=>setFormData(f=>({...f,due:e.target.value}))} style={inputStyle}/></Field>
+          <Field label="Notes"><textarea value={formData.notes} onChange={e=>setFormData(f=>({...f,notes:e.target.value}))} rows={3} style={{...inputStyle,resize:"vertical"}} placeholder="Add notes..."/></Field>
+          <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:16}}>
+            <button onClick={()=>setShowForm(false)} style={btnStyle("#1e293b","#94a3b8")}>Cancel</button>
+            <button onClick={saveTask} style={{background:"#00ff88",color:"#0a0e1a",border:"none",padding:"8px 20px",borderRadius:6,cursor:"pointer",fontWeight:"bold",fontFamily:"inherit",fontSize:13}}>Save Task</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Notes Modal */}
+      {activeNote&&(()=>{
+        const task=tasks.find(x=>x.id===activeNote);
+        return(
+          <Modal onClose={()=>setActiveNote(null)}>
+            <div style={{fontSize:16,fontWeight:"bold",color:"#00ff88",marginBottom:4}}>📝 TASK NOTES</div>
+            <div style={{fontSize:12,color:"#64748b",marginBottom:14}}>{task?.title}</div>
+            <textarea value={noteText} onChange={e=>setNoteText(e.target.value)} rows={8} style={{...inputStyle,resize:"vertical",width:"100%"}} placeholder="Add detailed notes, findings, observations..."/>
+            <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:12}}>
+              <button onClick={()=>setActiveNote(null)} style={btnStyle("#1e293b","#94a3b8")}>Cancel</button>
+              <button onClick={saveNote} style={{background:"#00ff88",color:"#0a0e1a",border:"none",padding:"8px 20px",borderRadius:6,cursor:"pointer",fontWeight:"bold",fontFamily:"inherit",fontSize:13}}>Save Notes</button>
+            </div>
+          </Modal>
+        );
+      })()}
+    </div>
+  );
+}
+
+ReactDOM.render(<App/>,document.getElementById("root"));
+</script>
+</body>
+</html>
